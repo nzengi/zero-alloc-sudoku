@@ -1,0 +1,27 @@
+[package]
+name = "sudoku-solver"
+version = "1.0.0"
+edition = "2021"
+authors = ["Cryptography Expert"]
+description = "Sub-microsecond Sudoku solver using cryptographic bit manipulation techniques"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Enable all CPU-specific optimizations
+[profile.release.package."*"]
+opt-level = 3
+
+[[bin]]
+name = "sudoku-solver"
+path = "src/main.rs"
+
+[lib]
+name = "sudoku"
+path = "src/main.rs"
