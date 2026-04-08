@@ -1,6 +1,6 @@
 # Apex Sudoku: High-Performance Zero-Allocation Solver in Rust
 
-**Apex Sudoku**, modern donanım mimarileri için optimize edilmiş, bellek tahsisi yapmayan (zero-allocation) ve mikrosaniye ölçeğinde çalışan ekstrem bir Sudoku çözücüdür. Kriptografik veri yapıları ve gelişmiş arama algoritmaları kullanılarak en karmaşık bulmacaları bile anında çözer.
+**Apex Sudoku**, modern donanım mimarileri için optimize edilmiş, bellek tahsisi yapmayan (zero-allocation) ve mikrosaniye ölçeğinde çalışan ekstrem bir Sudoku çözücüdür. Düşük seviyeli bit manipülasyonu ve gelişmiş arama algoritmaları kullanılarak en karmaşık bulmacaları bile anında çözer.
 
 ## 🚀 Öne Çıkan Özellikler
 
@@ -31,7 +31,7 @@ RUSTFLAGS="-C target-cpu=native" cargo run --release
 
 ## 🏗️ Mimari Yaklaşım
 
-Bir kriptografi uzmanı bakış açısıyla tasarlanan Apex Sudoku, şu teknikleri kullanır:
+Apex Sudoku, aşağıdaki düşük seviyeli optimizasyon tekniklerini kullanır:
 
 1.  **Bit-Level Pruning:** Arama ağacındaki dallanmaları, bit düzeyinde kısıtlama kontrolü yaparak daha oluşmadan budar.
 2.  **In-Place State Management:** Bulmaca durumu kopyalanmaz. Sadece yapılan değişiklikler (delta) üzerinden geri izleme (backtracking) yapılır.
