@@ -1,9 +1,17 @@
 [package]
-name = "sudoku-solver"
+name = "zero-alloc-sudoku"
 version = "1.0.0"
 edition = "2021"
-authors = ["Cryptography Expert"]
-description = "Sub-microsecond Sudoku solver using cryptographic bit manipulation techniques"
+authors = ["nzengi"]
+description = "Zero-allocation, sub-microsecond Sudoku solver with 9-bit bitboard constraint propagation and MRV backtracking."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nzengi/zero-alloc-sudoku"
+homepage = "https://github.com/nzengi/zero-alloc-sudoku"
+documentation = "https://docs.rs/zero-alloc-sudoku"
+readme = "README.md"
+keywords = ["sudoku", "solver", "bitboard", "puzzle", "zero-alloc"]
+categories = ["algorithms", "game-engines", "no-std"]
+exclude = ["target/"]
 
 [dependencies]
 
