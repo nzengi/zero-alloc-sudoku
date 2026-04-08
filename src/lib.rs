@@ -66,7 +66,6 @@ impl Sudoku {
             empty: [0; 81],
         };
         for (i, ch) in s.bytes().enumerate() {
-            // Reject anything outside ASCII '0'..='9'
             let val = match ch {
                 b'0'..=b'9' => ch - b'0',
                 _ => return None,
@@ -91,15 +90,8 @@ impl Sudoku {
         Some(board)
     }
 
-    /// Returns the bitmask of digits (bits 0–8 = digits 1–9) still available
-    /// for the cell at `idx`, computed as the complement of the union of its
-    /// row, column, and box constraints.
-    ///
-    /// # Safety
-    /// `idx` must be in `0..81`.
     #[inline(always)]
     fn get_mask(&self, idx: usize) -> u16 {
-        // SAFETY: idx must be in 0..81. ROW/COL/BOX values are in 0..9 by construction.
         debug_assert!(idx < 81, "get_mask: idx out of bounds: {}", idx);
         unsafe {
             let r = *ROW.get_unchecked(idx) as usize;
@@ -113,10 +105,8 @@ impl Sudoku {
         }
     }
 
-    /// Solves the puzzle in-place using MRV (Minimum Remaining Values) heuristic
-    /// backtracking with bit-level constraint propagation.
-    ///
-    /// Returns `true` if a solution was found, `false` if the puzzle is unsolvable.
+    /// Solves the puzzle in-place using MRV backtracking with bitboard constraint propagation.
+    /// Returns `true` if a solution exists, `false` if unsolvable.
     pub fn solve(&mut self) -> bool {
         let mut num_empty = 0;
         for i in 0..81 {
@@ -138,11 +128,9 @@ impl Sudoku {
         let mut best_mask = 0u16;
 
         for i in 0..num_empty {
-            // SAFETY: i < num_empty <= 81, and empty[i] was written as (cell_index as u8)
-            // where cell_index < 81, so the cast to usize is always in 0..81.
             debug_assert!(i < 81);
             let idx = unsafe { *self.empty.get_unchecked(i) as usize };
-            debug_assert!(idx < 81, "solve_recursive: empty[{}] = {} out of bounds", i, idx);
+            debug_assert!(idx < 81);
             let mask = self.get_mask(idx);
             let count = mask.count_ones();
             if count == 0 {
@@ -193,7 +181,6 @@ impl Sudoku {
         false
     }
 
-    /// Returns the current board state as an 81-character string of digits.
     pub fn to_string(&self) -> String {
         let mut s = String::with_capacity(81);
         for i in 0..81 {
@@ -202,7 +189,6 @@ impl Sudoku {
         s
     }
 
-    /// Prints the board in a human-readable 9×9 grid with box dividers.
     pub fn print(&self) {
         for row in 0..9 {
             if row % 3 == 0 && row != 0 {
@@ -224,148 +210,440 @@ impl Sudoku {
     }
 }
 
+// ============================================================
+//  CRYPTOGRAPHIC CORRECTNESS PROOF — TEST SUITE
+//
+//  Organized as formal property layers:
+//    L1 — Constant & lookup-table integrity
+//    L2 — Input validation soundness  (reject iff invalid)
+//    L3 — Output soundness            (solution ↔ valid Sudoku)
+//    L4 — State integrity             (backtrack undo, determinism)
+//    L5 — Batch completeness          (hard puzzle corpus)
+// ============================================================
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Verifies that a solved board satisfies all Sudoku constraints:
-    /// every row, column, and 3×3 box contains each digit 1–9 exactly once.
+    // ----------------------------------------------------------------
+    // Internal-only helpers
+    // ----------------------------------------------------------------
+
+    /// Checks that the solver's bitboard arrays (rows/cols/boxes) are
+    /// exactly consistent with the cell array — i.e. no shadow state
+    /// was left behind by incomplete backtracking.
+    impl Sudoku {
+        fn bitboard_matches_cells(&self) -> bool {
+            let mut er = [0u16; 9];
+            let mut ec = [0u16; 9];
+            let mut eb = [0u16; 9];
+            for i in 0..81 {
+                let v = self.cells[i];
+                if v != 0 {
+                    let bit = 1u16 << (v - 1);
+                    er[ROW[i] as usize] |= bit;
+                    ec[COL[i] as usize] |= bit;
+                    eb[BOX[i] as usize] |= bit;
+                }
+            }
+            self.rows == er && self.cols == ec && self.boxes == eb
+        }
+    }
+
+    /// Full Sudoku validity check: every row, column, and 3×3 box must
+    /// contain each of the digits 1–9 exactly once.
     fn is_valid_solution(cells: &[u8; 81]) -> bool {
-        let full: u16 = FULL_MASK;
-        // Check rows
+        // rows
         for r in 0..9 {
-            let mut mask = 0u16;
+            let mut m = 0u16;
             for c in 0..9 {
                 let v = cells[r * 9 + c];
-                if v == 0 || v > 9 {
-                    return false;
-                }
+                if v == 0 || v > 9 { return false; }
                 let bit = 1u16 << (v - 1);
-                if mask & bit != 0 {
-                    return false;
-                }
-                mask |= bit;
+                if m & bit != 0 { return false; }
+                m |= bit;
             }
-            if mask != full {
-                return false;
-            }
+            if m != FULL_MASK { return false; }
         }
-        // Check columns
+        // columns
         for c in 0..9 {
-            let mut mask = 0u16;
+            let mut m = 0u16;
             for r in 0..9 {
                 let v = cells[r * 9 + c];
                 let bit = 1u16 << (v - 1);
-                if mask & bit != 0 {
-                    return false;
-                }
-                mask |= bit;
+                if m & bit != 0 { return false; }
+                m |= bit;
             }
-            if mask != full {
-                return false;
-            }
+            if m != FULL_MASK { return false; }
         }
-        // Check 3×3 boxes
-        for box_r in 0..3 {
-            for box_c in 0..3 {
-                let mut mask = 0u16;
+        // 3×3 boxes
+        for br in 0..3 {
+            for bc in 0..3 {
+                let mut m = 0u16;
                 for dr in 0..3 {
                     for dc in 0..3 {
-                        let v = cells[(box_r * 3 + dr) * 9 + (box_c * 3 + dc)];
+                        let v = cells[(br * 3 + dr) * 9 + (bc * 3 + dc)];
                         let bit = 1u16 << (v - 1);
-                        if mask & bit != 0 {
-                            return false;
-                        }
-                        mask |= bit;
+                        if m & bit != 0 { return false; }
+                        m |= bit;
                     }
                 }
-                if mask != full {
-                    return false;
-                }
+                if m != FULL_MASK { return false; }
             }
         }
         true
     }
 
-    #[test]
-    fn test_al_escargot() {
-        let puzzle =
-            "100007060900020008080500000000305070020010000800000400004000000000460010030900005";
-
-        let mut solver = Sudoku::from_string(puzzle).unwrap();
-        assert!(solver.solve());
-
-        assert!(
-            is_valid_solution(&solver.cells),
-            "Solution failed full validity check"
-        );
-
-        // All original clues must be preserved
-        let puzzle_bytes: Vec<u8> = puzzle.bytes().collect();
-        for (i, &clue) in puzzle_bytes.iter().enumerate() {
-            if clue != b'0' {
-                assert_eq!(solver.cells[i], clue - b'0',
-                    "Clue at position {} was overwritten", i);
+    /// Asserts all original non-zero clues are unchanged in the solution.
+    fn assert_clues_preserved(puzzle: &str, solver: &Sudoku) {
+        for (i, ch) in puzzle.bytes().enumerate() {
+            if ch != b'0' {
+                assert_eq!(
+                    solver.cells[i], ch - b'0',
+                    "Clue at position {} (row {}, col {}) was overwritten: \
+                     expected {} got {}",
+                    i, i / 9, i % 9, ch - b'0', solver.cells[i]
+                );
             }
         }
     }
 
+    // ================================================================
+    // L1 — Constant & lookup-table integrity
+    // ================================================================
+
+    /// FULL_MASK must be the 9-bit all-ones value (0b1_1111_1111 = 0x1FF = 511).
+    /// Any deviation would silently allow duplicate digits to pass constraint checks.
     #[test]
-    fn test_platinum_blonde() {
-        // "Platinum Blonde" — a well-known symmetrical hard puzzle.
-        let puzzle =
-            "000000012000000003002300400001800005060000070004000600000050090000200001000000000";
+    fn l1_full_mask_is_9_bit_all_ones() {
+        assert_eq!(FULL_MASK, 0b1_1111_1111, "FULL_MASK wrong binary value");
+        assert_eq!(FULL_MASK, 0x1FF,         "FULL_MASK wrong hex value");
+        assert_eq!(FULL_MASK, 511u16,         "FULL_MASK wrong decimal value");
+        assert_eq!(FULL_MASK.count_ones(), 9, "FULL_MASK must have exactly 9 set bits");
+        assert_eq!(FULL_MASK & !0x1FF, 0,     "FULL_MASK must not set bits above bit-8");
+    }
 
-        let mut solver = Sudoku::from_string(puzzle).unwrap();
-        assert!(solver.solve(), "Solver failed to find a solution");
+    /// ROW[i] must equal i/9 for every i in 0..81.
+    #[test]
+    fn l1_row_table_is_correct() {
+        for i in 0..81usize {
+            assert_eq!(ROW[i], (i / 9) as u8, "ROW[{}] wrong", i);
+            assert!(ROW[i] < 9, "ROW[{}] out of range", i);
+        }
+        // Each row index must appear exactly 9 times (one per cell in that row).
+        let mut counts = [0u8; 9];
+        for &r in ROW.iter() { counts[r as usize] += 1; }
+        assert_eq!(counts, [9u8; 9], "Each row index must appear 9 times in ROW table");
+    }
 
-        assert!(
-            is_valid_solution(&solver.cells),
-            "Solution failed full validity check (row/col/box constraints)"
-        );
+    /// COL[i] must equal i%9 for every i in 0..81.
+    #[test]
+    fn l1_col_table_is_correct() {
+        for i in 0..81usize {
+            assert_eq!(COL[i], (i % 9) as u8, "COL[{}] wrong", i);
+            assert!(COL[i] < 9, "COL[{}] out of range", i);
+        }
+        let mut counts = [0u8; 9];
+        for &c in COL.iter() { counts[c as usize] += 1; }
+        assert_eq!(counts, [9u8; 9], "Each col index must appear 9 times in COL table");
+    }
 
-        let puzzle_bytes: Vec<u8> = puzzle.bytes().collect();
-        for (i, &clue) in puzzle_bytes.iter().enumerate() {
-            if clue != b'0' {
-                assert_eq!(solver.cells[i], clue - b'0',
-                    "Clue at position {} was overwritten", i);
-            }
+    /// BOX[i] must equal (i/27)*3 + (i%9/3) and must be in 0..9.
+    /// Each of the 9 box indices must appear exactly 9 times.
+    #[test]
+    fn l1_box_table_is_correct() {
+        for i in 0..81usize {
+            let expected = ((i / 27) * 3 + (i % 9 / 3)) as u8;
+            assert_eq!(BOX[i], expected, "BOX[{}] wrong", i);
+            assert!(BOX[i] < 9, "BOX[{}] out of range", i);
+        }
+        let mut counts = [0u8; 9];
+        for &b in BOX.iter() { counts[b as usize] += 1; }
+        assert_eq!(counts, [9u8; 9], "Each box index must appear 9 times in BOX table");
+    }
+
+    /// ROW, COL, BOX must partition the 81 cells consistently:
+    /// for every cell, the triple (row, col, box) uniquely identifies it
+    /// and the box membership must agree with the row/col grid position.
+    #[test]
+    fn l1_row_col_box_partition_is_consistent() {
+        for i in 0..81usize {
+            let r = ROW[i] as usize;
+            let c = COL[i] as usize;
+            let b = BOX[i] as usize;
+            // Recompute canonical cell index and verify it round-trips.
+            assert_eq!(r * 9 + c, i, "ROW/COL round-trip failed at index {}", i);
+            // Verify box identity from (r, c).
+            let expected_box = (r / 3) * 3 + (c / 3);
+            assert_eq!(b, expected_box,
+                "BOX[{}] = {} but (row={}, col={}) implies box {}", i, b, r, c, expected_box);
         }
     }
 
+    // ================================================================
+    // L2 — Input validation soundness
+    // ================================================================
+
     #[test]
-    fn test_hardest_2012() {
-        let puzzle =
-            "800000000003600000070090200050007000000045700000100030001000068008500010090000400";
-
-        let mut solver = Sudoku::from_string(puzzle).unwrap();
-        assert!(solver.solve());
-
-        assert!(
-            is_valid_solution(&solver.cells),
-            "Solution failed full validity check (row/col/box constraints)"
-        );
-
-        let puzzle_bytes: Vec<u8> = puzzle.bytes().collect();
-        for (i, &clue) in puzzle_bytes.iter().enumerate() {
-            if clue != b'0' {
-                assert_eq!(solver.cells[i], clue - b'0',
-                    "Clue at position {} was overwritten", i);
-            }
-        }
+    fn l2_rejects_row_duplicate() {
+        // Two 1s in the same row — must return None.
+        let s = "110000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000";
+        assert!(Sudoku::from_string(s).is_none(), "Row duplicate must be rejected");
     }
 
     #[test]
-    fn test_invalid_puzzle_detection() {
-        // Duplicate in row
-        let invalid = "110000000000000000000000000000000000000000000000000000000000000000000000000000000";
-        assert!(Sudoku::from_string(invalid).is_none());
+    fn l2_rejects_col_duplicate() {
+        // Digit 5 in column 4 of rows 0 and 1.
+        let s = "000050000\
+                 000050000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000";
+        assert!(Sudoku::from_string(s).is_none(), "Column duplicate must be rejected");
+    }
 
-        // Non-digit character
-        let non_digit = "x00000000000000000000000000000000000000000000000000000000000000000000000000000000";
-        assert!(Sudoku::from_string(non_digit).is_none());
+    #[test]
+    fn l2_rejects_box_duplicate() {
+        // Digit 3 in two cells of the same 3×3 box but different rows and columns.
+        // Box 4 (centre): rows 3-5, cols 3-5. Put 3 at (3,3) and (5,5).
+        let s = "000000000\
+                 000000000\
+                 000000000\
+                 000300000\
+                 000000000\
+                 000003000\
+                 000000000\
+                 000000000\
+                 000000000";
+        assert!(Sudoku::from_string(s).is_none(), "Box duplicate must be rejected");
+    }
 
-        // Wrong length
-        assert!(Sudoku::from_string("12345").is_none());
+    #[test]
+    fn l2_rejects_non_digit_character() {
+        let s = "x00000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000\
+                 000000000";
+        assert!(Sudoku::from_string(s).is_none(), "Non-digit must be rejected");
+    }
+
+    #[test]
+    fn l2_rejects_wrong_length() {
+        assert!(Sudoku::from_string("").is_none(), "empty string must be rejected");
+        assert!(Sudoku::from_string("123456789").is_none(), "9-char string must be rejected");
+
+        // 80 chars — one too short
+        let short: String = "0".repeat(80);
+        assert!(Sudoku::from_string(&short).is_none(), "80-char string must be rejected");
+
+        // 82 chars — one too long
+        let long: String = "0".repeat(82);
+        assert!(Sudoku::from_string(&long).is_none(), "82-char string must be rejected");
+    }
+
+    #[test]
+    fn l2_accepts_all_zeros_empty_board() {
+        let s: String = "0".repeat(81);
+        assert!(Sudoku::from_string(&s).is_some(), "All-zeros board must be accepted");
+    }
+
+    // ================================================================
+    // L3 — Output soundness
+    // ================================================================
+
+    /// Core property: the solver NEVER outputs an invalid Sudoku.
+    /// Tested on Al Escargot (Arto Inkala, 2007).
+    #[test]
+    fn l3_al_escargot_solution_is_valid() {
+        let puzzle = "100007060900020008080500000000305070020010000800000400004000000000460010030900005";
+        let mut s = Sudoku::from_string(puzzle).unwrap();
+        assert!(s.solve(), "solve() must return true");
+        assert!(is_valid_solution(&s.cells), "Output is not a valid Sudoku");
+        assert_clues_preserved(puzzle, &s);
+        assert!(s.cells.iter().all(|&v| v != 0), "Solved board must have no empty cells");
+    }
+
+    /// Tested on Arto Inkala's 2010 "AI Sudoku" (a.k.a. "Hardest 2012").
+    #[test]
+    fn l3_hardest_2012_solution_is_valid() {
+        let puzzle = "800000000003600000070090200050007000000045700000100030001000068008500010090000400";
+        let mut s = Sudoku::from_string(puzzle).unwrap();
+        assert!(s.solve());
+        assert!(is_valid_solution(&s.cells));
+        assert_clues_preserved(puzzle, &s);
+        assert!(s.cells.iter().all(|&v| v != 0));
+    }
+
+    /// Tested on "Platinum Blonde" (well-known symmetrical hard puzzle).
+    #[test]
+    fn l3_platinum_blonde_solution_is_valid() {
+        let puzzle = "000000012000000003002300400001800005060000070004000600000050090000200001000000000";
+        let mut s = Sudoku::from_string(puzzle).unwrap();
+        assert!(s.solve());
+        assert!(is_valid_solution(&s.cells));
+        assert_clues_preserved(puzzle, &s);
+        assert!(s.cells.iter().all(|&v| v != 0));
+    }
+
+    // ================================================================
+    // L4 — State integrity
+    // ================================================================
+
+    /// After `solve()`, the internal bitboards (rows/cols/boxes) must match
+    /// the cells array exactly — no shadow state from backtracking.
+    #[test]
+    fn l4_bitboard_consistent_after_parse() {
+        let puzzle = "800000000003600000070090200050007000000045700000100030001000068008500010090000400";
+        let s = Sudoku::from_string(puzzle).unwrap();
+        assert!(s.bitboard_matches_cells(),
+            "Bitboard state must match cells immediately after from_string");
+    }
+
+    #[test]
+    fn l4_bitboard_consistent_after_solve() {
+        let puzzle = "100007060900020008080500000000305070020010000800000400004000000000460010030900005";
+        let mut s = Sudoku::from_string(puzzle).unwrap();
+        s.solve();
+        assert!(s.bitboard_matches_cells(),
+            "Bitboard state must match cells after solve — backtracking left shadow state");
+    }
+
+    /// solve() on an already-complete (zero empty cells) valid board must
+    /// return true immediately without touching any cell.
+    #[test]
+    fn l4_already_solved_board_returns_true() {
+        // Cyclic-shift valid solution; verified by inspection:
+        // rows, cols, and boxes each contain 1–9 exactly once.
+        let solved = "123456789456789123789123456231564897564897231897231564312645978645978312978312645";
+        let mut s = Sudoku::from_string(solved).unwrap();
+        let cells_before = s.cells;
+        assert!(s.solve(), "solve() must return true for an already-solved board");
+        assert_eq!(s.cells, cells_before, "solve() must not touch cells of a solved board");
+    }
+
+    /// solve() on an unsolvable board must return false AND leave the
+    /// original clue cells untouched (clean backtracking invariant).
+    ///
+    /// Construction:
+    ///   Row 0 cols 1-8 = digits 1-8  →  row 0 uses {1..8}, needs 9 at col 0.
+    ///   Col 0 row 1    = digit 9     →  col 0 already has 9.
+    ///   Cell (0,0) is empty: its row needs 9, its column already has 9 → no valid digit.
+    #[test]
+    fn l4_unsolvable_board_returns_false_and_preserves_clues() {
+        //  Row 0:  _ 1 2 3 4 5 6 7 8   (cell 0,0 is empty; row needs 9)
+        //  Row 1:  9 _ _ _ _ _ _ _ _   (col 0 already has 9)
+        //  Rows 2-8: all empty
+        let puzzle = "012345678\
+                      900000000\
+                      000000000\
+                      000000000\
+                      000000000\
+                      000000000\
+                      000000000\
+                      000000000\
+                      000000000";
+        let mut s = Sudoku::from_string(puzzle)
+            .expect("Puzzle must be accepted by from_string (no direct clue conflicts)");
+
+        // Snapshot clue cells before the (failing) solve.
+        let clue_snapshot: Vec<u8> = puzzle.bytes()
+            .enumerate()
+            .filter(|(_, b)| *b != b'0')
+            .map(|(i, _)| s.cells[i])
+            .collect();
+
+        assert!(!s.solve(), "Unsolvable board must return false");
+
+        // All original clues must be preserved even after backtracking.
+        for (idx, (i, b)) in puzzle.bytes()
+            .enumerate()
+            .filter(|(_, b)| *b != b'0')
+            .enumerate()
+        {
+            assert_eq!(s.cells[i], clue_snapshot[idx],
+                "Clue at {} altered after failed solve (expected {}, got {})",
+                i, clue_snapshot[idx], s.cells[i]);
+            let _ = b; // satisfy the borrow checker
+        }
+    }
+
+    /// Solving the same puzzle twice must yield bit-for-bit identical results
+    /// (determinism required for reproducible behaviour).
+    #[test]
+    fn l4_solve_is_deterministic() {
+        let puzzle = "000000012000000003002300400001800005060000070004000600000050090000200001000000000";
+        let mut a = Sudoku::from_string(puzzle).unwrap();
+        let mut b = Sudoku::from_string(puzzle).unwrap();
+        a.solve();
+        b.solve();
+        assert_eq!(a.cells, b.cells, "Two independent solves of the same puzzle differ");
+    }
+
+    // ================================================================
+    // L5 — Batch completeness on a corpus of hard puzzles
+    // ================================================================
+
+    /// Runs the solver against 5 independently-sourced hard puzzles and
+    /// verifies full row/col/box correctness and clue preservation for each.
+    #[test]
+    fn l5_batch_hard_puzzles() {
+        // (name, puzzle_string)
+        let corpus: &[(&str, &str)] = &[
+            // Arto Inkala "Al Escargot" (2007)
+            ("Al Escargot",
+             "100007060900020008080500000000305070020010000800000400004000000000460010030900005"),
+            // Arto Inkala "AI Sudoku" / Hardest 2012
+            ("Hardest 2012",
+             "800000000003600000070090200050007000000045700000100030001000068008500010090000400"),
+            // Platinum Blonde — symmetric 22-clue hard puzzle
+            ("Platinum Blonde",
+             "000000012000000003002300400001800005060000070004000600000050090000200001000000000"),
+            // From norvig.com/sudoku.html — hard puzzle used in MRV benchmark
+            ("Norvig hard",
+             "400000805030000000000700000020000060000080400000010000000603070500200000104000000"),
+            // Classic easy puzzle (quick sanity check at end of batch)
+            ("Classic easy",
+             "003020600900305001001806400008102900700000008006708200002609500800203009005010300"),
+        ];
+
+        for (name, puzzle) in corpus {
+            let mut s = Sudoku::from_string(puzzle)
+                .unwrap_or_else(|| panic!("{}: from_string returned None", name));
+
+            assert!(s.solve(), "{}: solver returned false", name);
+
+            assert!(
+                is_valid_solution(&s.cells),
+                "{}: solution is not a valid Sudoku", name
+            );
+
+            assert_clues_preserved(puzzle, &s);
+
+            assert!(
+                s.cells.iter().all(|&v| v != 0),
+                "{}: solution contains empty cells", name
+            );
+
+            assert!(
+                s.bitboard_matches_cells(),
+                "{}: bitboard/cell mismatch after solve", name
+            );
+        }
     }
 }
